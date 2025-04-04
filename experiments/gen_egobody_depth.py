@@ -64,7 +64,7 @@ def rollout_primitives(motion_primitives):
 
 def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 vis_navmesh=True, start_frame=0,
-                slow_rate=1, save_path=None, add_floor=True, scene_mesh=None):
+                slow_rate=1, save_path=None, add_floor=True, scene_mesh=None, scene_name = None):
     scene = pyrender.Scene()
     motions_list = []
 
@@ -73,11 +73,11 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
     scene.add_node(object_node)
 
     # eval model
-    while True:
+    # while True:
         # ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=/mnt/vlg-nfs/genli/log_pretrain_dep13_seedori/log_2f_ego_gru_rpene1_rlook0.3-finetune-newrpene0.1/collision-avoidance/ppo/0/231017-222547/policy.pth', '--watch', '--scene-name=%s' % scene_name])
-        ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=data/checkpoint_best.pth', '--watch', '--scene-name=%s' % scene_name])
-        if ret == 0:
-            break
+        # ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=data/checkpoint_best.pth', '--watch', '--scene-name=%s' % scene_name])
+        # if ret == 0:
+        #     break
     result_paths = ['egobody_tmp_res/motion_0.pkl', 'egobody_tmp_res/motion_1.pkl']
     for input_path in result_paths:
         with open(input_path, 'rb') as f:
@@ -283,9 +283,10 @@ bm_female2 = smplx.create(model_path=model_path,
                           batch_size=2,
                           ).to(device)
 
-if __name__ == '__main__':
-    MAX_NUM = 7000
-
+# if __name__ == '__main__':
+def genDepth(max_num, scene_name):
+    # MAX_NUM = 7000
+    MAX_NUM = max_num
     """
     with open('/mnt/vlg-nfs/kaizhao/datasets/scene_mesh_4render/list.txt', 'r') as f:
         scene_names = f.readlines()
@@ -304,14 +305,15 @@ if __name__ == '__main__':
                 break
     """
 
-    scene_name = "seminar_d78"
-    valid_num = 0
+    # scene_name = "seminar_d78"
+    # valid_num = 0
     scene_mesh = trimesh.load(os.path.join('exp_data', scene_name, 'mesh_floor_zup.ply'))
+    # scene_mesh = trimesh.load(os.path.join('exp_data', scene_name, 'z_up_cab_e.obj'))
     while True:
         gen_data_egobody(
             scene_mesh = scene_mesh,
             vis_navmesh=False,
-            vis_marker=False, vis_pelvis=False, vis_object=True, add_floor=False,
+            vis_marker=False, vis_pelvis=False, vis_object=True, add_floor=False, scene_name = scene_name,
             )
         if valid_num >= MAX_NUM:
             break

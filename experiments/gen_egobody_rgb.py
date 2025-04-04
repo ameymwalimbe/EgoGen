@@ -24,6 +24,28 @@ jet = plt.get_cmap('twilight')
 cNorm  = colors.Normalize(vmin=0, vmax=1)
 scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=jet)
 
+def add_indirect_illumination(scene, intensity=0.5):
+    """
+    Adds multiple point lights to the scene to simulate indirect illumination.
+    This approximates the bounced light in the scene by illuminating from several
+    different angles.
+    
+    Parameters:
+        scene (pyrender.Scene): The scene to which the lights will be added.
+        intensity (float): The intensity of each point light.
+    """
+    # Define positions for the indirect (bounced) lights
+    light_positions = [
+        [10, 10, 10],
+        [-10, 10, 10],
+        [10, 10, -10],
+        [-10, 10, -10],
+        [0, 15, 0]
+    ]
+    for pos in light_positions:
+        point_light = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=intensity)
+        light_node = pyrender.Node(light=point_light, translation=pos)
+        scene.add_node(light_node)
 
 def make_new_mesh(vt, f, ft, mesh, image):
     """
@@ -166,7 +188,7 @@ def rollout_primitives(motion_primitives):
 
 def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 vis_navmesh=True, start_frame=0,
-                slow_rate=1, save_path=None, add_floor=True, scene_mesh=None):
+                slow_rate=1, save_path=None, add_floor=True, scene_mesh=None, scene_name=None):
     ambient_intensity = np.random.uniform(0.5, 0.8)
     bg_color = np.random.uniform(0.9, 1.)
     scene = pyrender.Scene(ambient_light=[ambient_intensity, ambient_intensity, ambient_intensity], bg_color=[bg_color, bg_color, bg_color, 0.5])
@@ -177,11 +199,11 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
     scene.add_node(object_node)
 
     # eval model
-    while True:
-        # ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=/mnt/vlg-nfs/genli/log_pretrain_dep13_seedori/log_2f_ego_gru_rpene1_rlook0.3-finetune-newrpene0.1/collision-avoidance/ppo/0/231017-222547/policy.pth', '--watch', '--scene-name=%s' % scene_name])
-        ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=data/checkpoint_best.pth', '--watch', '--scene-name=%s' % scene_name])
-        if ret == 0:
-            break
+    # while True:
+    #     # ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=/mnt/vlg-nfs/genli/log_pretrain_dep13_seedori/log_2f_ego_gru_rpene1_rlook0.3-finetune-newrpene0.1/collision-avoidance/ppo/0/231017-222547/policy.pth', '--watch', '--scene-name=%s' % scene_name])
+    #     ret = subprocess.call(['python', 'crowd_ppo/main_egobody_eval.py', '--resume-path=data/checkpoint_best.pth', '--watch', '--scene-name=%s' % scene_name])
+    #     if ret == 0:
+    #         break
     result_paths = ['egobody_tmp_res/motion_0.pkl', 'egobody_tmp_res/motion_1.pkl']
     for input_path in result_paths:
         with open(input_path, 'rb') as f:
@@ -212,14 +234,16 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
         ethnicity = random.choice(["asian", "hispanic", "mideast", "white"])
         texture_paths = [tp for tp in body_texture_path if "m_" + ethnicity in tp]
         smpl_texture_path = random.choice(texture_paths).split('/')[-1] 
-        clothing_name = random.choice(['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_ethan_posed_015", "rp_henry_posed_001"]) 
+        # clothing_name = random.choice(['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_ethan_posed_015", "rp_henry_posed_001"])
+        clothing_name = random.choice(['rp_aaron_posed_009', "rp_aaron_posed_013"]) 
         # clothing_texture_name = random.choice(clothing_texture_paths).split('/')[-2]
     elif genders[0] == 'female':
         body_model = bm_female2
         ethnicity = random.choice(["asian", "hispanic", "mideast", "white"])
         texture_paths = [tp for tp in body_texture_path if "f_" + ethnicity in tp]
         smpl_texture_path = random.choice(texture_paths).split('/')[-1]
-        clothing_name = random.choice(["rp_alexandra_posed_025", "rp_aneko_posed_011", "rp_claudia_posed_020"]) 
+        # clothing_name = random.choice(["rp_alexandra_posed_025", "rp_aneko_posed_011", "rp_claudia_posed_020"])
+        clothing_name = random.choice(["rp_alexandra_posed_025", "rp_aneko_posed_011"]) 
         # clothing_texture_name = random.choice(clothing_texture_paths).split('/')[-2]
     else:
         body_model = None
@@ -256,11 +280,13 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
     # Init camera here
     camera_pose = np.eye(4)
     camera = pyrender.camera.IntrinsicsCamera(fx=fx, fy=fx, cx=cx, cy=cy)
-    light = pyrender.DirectionalLight(color=[np.random.uniform(0.9, 1.), np.random.uniform(0.9, 1.), np.random.uniform(0.9, 1.)],\
+    light = pyrender.DirectionalLight(color=[np.random.uniform(0.9, 1.), np.random.uniform(0.9, 1.), np.random.uniform(0.9, 1.)],
                                       intensity=np.random.uniform(2., 6.))
     # light = pyrender.SpotLight(color=np.ones(3), intensity=6.)
     light_node = pyrender.Node(light=light)
     scene.add_node(light_node)
+
+    # add_indirect_illumination(scene, intensity=0.5)
 
     top = {0: {}, 1: {}}
     pant = {0: {}, 1: {}}
@@ -478,12 +504,12 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 base_path = 'tmp/egobody_rgb'
                 # if not os.path.exists(os.path.join(base_path, scene_name, 'rgb')):
                 #     os.makedirs(os.path.join(base_path, scene_name, 'rgb'))
-                if not os.path.exists(os.path.join(base_path, scene_name, 'rgb')):
-                    os.makedirs(os.path.join(base_path, scene_name, 'rgb'))
-                if not os.path.exists(os.path.join(base_path, scene_name, 'smplx_params')):
-                    os.makedirs(os.path.join(base_path, scene_name, 'smplx_params'))
+                if not os.path.exists(os.path.join(base_path, scene_name, 'no_ii', 'rgb')):
+                    os.makedirs(os.path.join(base_path, scene_name, 'no_ii', 'rgb'))
+                if not os.path.exists(os.path.join(base_path, scene_name, 'no_ii', 'smplx_params')):
+                    os.makedirs(os.path.join(base_path, scene_name, 'no_ii', 'smplx_params'))
                 # np.save(os.path.join(base_path, scene_name, 'rgb', '%d.npy' % valid_num), rgb)
-                cv2.imwrite(os.path.join(base_path, scene_name, 'rgb', '%d.jpg' % valid_num), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(base_path, scene_name, 'no_ii', 'rgb', '%d.jpg' % valid_num), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
                 custom_smplx_params = np.zeros(99)
                 custom_smplx_params[:69] = smplx_params[1 - seq_idx, frame_idx, :69]
                 custom_smplx_params[69:85] = Rt.reshape(-1)
@@ -492,10 +518,17 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 custom_smplx_params[96] = cx
                 custom_smplx_params[97] = cy
                 custom_smplx_params[98] = fx
-                np.save(os.path.join(base_path, scene_name, 'smplx_params', '%d.npy' % valid_num), custom_smplx_params)
+                np.save(os.path.join(base_path, scene_name, 'no_ii', 'smplx_params', '%d.npy' % valid_num), custom_smplx_params)
+
 
 
 model_path = "data/smplx/models"
+body_texture_path = np.load('HOOD/hood_data/bedlam/body_texture_path.npy')
+clothing_texture_paths = np.load('HOOD/hood_data/bedlam/new_clothing_texture_path.npy')
+HOOD_PYTHON = "/home/amey/miniconda3/envs/hood/bin/python"
+smplx_vt = obj_vt('HOOD/hood_data/bedlam/smplx_uv.obj')
+smplx_f = obj_fv('HOOD/hood_data/bedlam/smplx_uv.obj')
+smplx_ft = obj_ft('HOOD/hood_data/bedlam/smplx_uv.obj')
 device = torch.device('cuda')
 valid_num = 0
 
@@ -525,9 +558,24 @@ bm_female2 = smplx.create(model_path=model_path,
                           batch_size=2,
                           ).to(device)
 
-if __name__ == '__main__':
+body_texture = {}
+for tex_path in body_texture_path:
+    # im = Image.alpha_composite(Image.open(tex_path), eye_img)
+    # im.save("/mnt/vlg-nfs/genli/datasets/bedlam/" + tex_path.split('/')[-1])
+    body_texture[tex_path.split('/')[-1]] = Image.open(tex_path)
+
+clothing_texture = {}
+# for clothing_name in ['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_ethan_posed_015", "rp_henry_posed_001", "rp_alexandra_posed_025", "rp_aneko_posed_011", "rp_claudia_posed_020"]:
+for clothing_name in ['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_alexandra_posed_025", "rp_aneko_posed_011"]: 
+    clothing_texture[clothing_name] = {}
+for tex_path in clothing_texture_paths:
+    clothing_name = tex_path.split('/')[-4]
+    clothing_texture[clothing_name][tex_path.split('/')[-2]] = Image.open(tex_path)
+
+# if __name__ == '__main__':
+def genRGB(max_num, scene_name):
     # make sure you installed hood conda env first!
-    HOOD_PYTHON = "/home/genli/miniconda3/envs/hood/bin/python"
+    # HOOD_PYTHON = "/home/amey/miniconda3/envs/hood/bin/python"
     if "genli" in HOOD_PYTHON:
         print()
         print("     WARNING: Please replace HOOD_PYTHON with your hood python path!")
@@ -537,46 +585,49 @@ if __name__ == '__main__':
         print("         conda deactivate")
         print()
         pdb.set_trace()
-    MAX_NUM = 20000
+    # MAX_NUM = 20000
+    MAX_NUM = max_num
     # with open('/mnt/vlg-nfs/kaizhao/datasets/scene_mesh_4render/list.txt', 'r') as f:
     #     scene_names = f.readlines()
 
     # for scene_name in scene_names:
     if True:
         # scene_name = scene_name.strip()
-        scene_name = "seminar_d78"
-        valid_num = 0
+        # scene_name = "seminar_d78"
+        # valid_num = 0
         scene_mesh = trimesh.load(os.path.join('exp_data', scene_name, 'mesh_floor_zup.ply'))
+        # scene_mesh = trimesh.load(os.path.join('exp_data', scene_name, 'cab_e.obj'))
 
         # smplx_uv = trimesh.load('/mnt/vlg-nfs/genli/datasets/bedlam/smplx_uv.obj', process=False)
         # smplx_uv.merge_vertices(merge_tex=True)
         # uv = smplx_uv.visual.uv
-        smplx_vt = obj_vt('HOOD/hood_data/bedlam/smplx_uv.obj')
-        smplx_f = obj_fv('HOOD/hood_data/bedlam/smplx_uv.obj')
-        smplx_ft = obj_ft('HOOD/hood_data/bedlam/smplx_uv.obj')
+        # smplx_vt = obj_vt('HOOD/hood_data/bedlam/smplx_uv.obj')
+        # smplx_f = obj_fv('HOOD/hood_data/bedlam/smplx_uv.obj')
+        # smplx_ft = obj_ft('HOOD/hood_data/bedlam/smplx_uv.obj')
 
-        body_texture_path = np.load('HOOD/hood_data/bedlam/body_texture_path.npy')
-        clothing_texture_paths = np.load('HOOD/hood_data/bedlam/clothing_texture_path.npy')
+        # body_texture_path = np.load('HOOD/hood_data/bedlam/body_texture_path.npy')
+        # clothing_texture_paths = np.load('HOOD/hood_data/bedlam/new_clothing_texture_path.npy')
         # eye_path = '/mnt/vlg-nfs/genli/bedlam/bedlam_body_textures_meshcapade/eye/SMPLX_eye.png' 
         # eye_img = Image.open(eye_path)
-        body_texture = {}
-        for tex_path in body_texture_path:
-            # im = Image.alpha_composite(Image.open(tex_path), eye_img)
-            # im.save("/mnt/vlg-nfs/genli/datasets/bedlam/" + tex_path.split('/')[-1])
-            body_texture[tex_path.split('/')[-1]] = Image.open(tex_path)
+        # body_texture = {}
+        # for tex_path in body_texture_path:
+        #     # im = Image.alpha_composite(Image.open(tex_path), eye_img)
+        #     # im.save("/mnt/vlg-nfs/genli/datasets/bedlam/" + tex_path.split('/')[-1])
+        #     body_texture[tex_path.split('/')[-1]] = Image.open(tex_path)
         
-        clothing_texture = {}
-        for clothing_name in ['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_ethan_posed_015", "rp_henry_posed_001", "rp_alexandra_posed_025", "rp_aneko_posed_011", "rp_claudia_posed_020"]:
-            clothing_texture[clothing_name] = {}
-        for tex_path in clothing_texture_paths:
-            clothing_name = tex_path.split('/')[-4]
-            clothing_texture[clothing_name][tex_path.split('/')[-2]] = Image.open(tex_path)
+        # clothing_texture = {}
+        # # for clothing_name in ['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_ethan_posed_015", "rp_henry_posed_001", "rp_alexandra_posed_025", "rp_aneko_posed_011", "rp_claudia_posed_020"]:
+        # for clothing_name in ['rp_aaron_posed_009', "rp_aaron_posed_013", "rp_alexandra_posed_025", "rp_aneko_posed_011"]: 
+        #     clothing_texture[clothing_name] = {}
+        # for tex_path in clothing_texture_paths:
+        #     clothing_name = tex_path.split('/')[-4]
+        #     clothing_texture[clothing_name][tex_path.split('/')[-2]] = Image.open(tex_path)
         
         while True:
             gen_data_egobody(
                 scene_mesh = scene_mesh,
                 vis_navmesh=False,
-                vis_marker=False, vis_pelvis=False, vis_object=True, add_floor=False,
+                vis_marker=False, vis_pelvis=False, vis_object=True, add_floor=False, scene_name=scene_name,
                 )
             if valid_num >= MAX_NUM:
                 break
