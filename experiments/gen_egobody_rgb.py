@@ -24,29 +24,6 @@ jet = plt.get_cmap('twilight')
 cNorm  = colors.Normalize(vmin=0, vmax=1)
 scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=jet)
 
-def add_indirect_illumination(scene, intensity=0.5):
-    """
-    Adds multiple point lights to the scene to simulate indirect illumination.
-    This approximates the bounced light in the scene by illuminating from several
-    different angles.
-    
-    Parameters:
-        scene (pyrender.Scene): The scene to which the lights will be added.
-        intensity (float): The intensity of each point light.
-    """
-    # Define positions for the indirect (bounced) lights
-    light_positions = [
-        [10, 10, 10],
-        [-10, 10, 10],
-        [10, 10, -10],
-        [-10, 10, -10],
-        [0, 15, 0]
-    ]
-    for pos in light_positions:
-        point_light = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=intensity)
-        light_node = pyrender.Node(light=point_light, translation=pos)
-        scene.add_node(light_node)
-
 def make_new_mesh(vt, f, ft, mesh, image):
     """
     Add missing vertices to the mesh such that it has the same number of vertices as the texture coordinates
@@ -285,8 +262,6 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
     # light = pyrender.SpotLight(color=np.ones(3), intensity=6.)
     light_node = pyrender.Node(light=light)
     scene.add_node(light_node)
-
-    # add_indirect_illumination(scene, intensity=0.5)
 
     top = {0: {}, 1: {}}
     pant = {0: {}, 1: {}}
