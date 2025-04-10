@@ -20,32 +20,297 @@ import matplotlib.cm as cm
 from matplotlib import pyplot as plt
 from matplotlib import colors
 from matplotlib import cm as cmx
+from OpenGL.GL import *
 jet = plt.get_cmap('twilight')
 cNorm  = colors.Normalize(vmin=0, vmax=1)
 scalarMap = cmx.ScalarMappable(norm=cNorm, cmap=jet)
 
-def add_indirect_illumination(scene, intensity=0.5):
+def create_simple_cubemap(image_path):
+    # Load one image for all faces (test purposes only)
+    image = Image.open(image_path).convert("RGB").resize((512, 512))
+    img_data = np.array(image).astype(np.uint8)
+
+    tex_id = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_id)
+    for i in range(6):
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, 512, 512, 0, GL_RGB, GL_UNSIGNED_BYTE, img_data)
+
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
+
+    return tex_id
+def render_cubemap(scene, env_camera, renderer, resolution=256):
     """
-    Adds multiple point lights to the scene to simulate indirect illumination.
-    This approximates the bounced light in the scene by illuminating from several
-    different angles.
+    Renders the six faces of a cubemap from the scene.
     
     Parameters:
-        scene (pyrender.Scene): The scene to which the lights will be added.
-        intensity (float): The intensity of each point light.
+        scene (pyrender.Scene): The scene to capture.
+        env_camera (pyrender.Camera): The camera used for cubemap rendering.
+        renderer (pyrender.OffscreenRenderer): Renderer instance.
+        resolution (int): Resolution (width & height) for each cubemap face.
+    
+    Returns:
+        dict: A dictionary with keys for each face ('posx', 'negx', 'posy', 'negy', 'posz', 'negz')
+              and their corresponding rendered images (numpy arrays).
     """
-    # Define positions for the indirect (bounced) lights
-    light_positions = [
-        [10, 10, 10],
-        [-10, 10, 10],
-        [10, 10, -10],
-        [-10, 10, -10],
-        [0, 15, 0]
-    ]
-    for pos in light_positions:
-        point_light = pyrender.PointLight(color=[1.0, 1.0, 1.0], intensity=intensity)
-        light_node = pyrender.Node(light=point_light, translation=pos)
-        scene.add_node(light_node)
+    # Define the look directions and up vectors for each cubemap face.
+    faces = {
+        'posx': (np.array([1, 0, 0]),  np.array([0, -1, 0])),
+        'negx': (np.array([-1, 0, 0]), np.array([0, -1, 0])),
+        'posy': (np.array([0, 1, 0]),  np.array([0, 0, 1])),
+        'negy': (np.array([0, -1, 0]), np.array([0, 0, -1])),
+        'posz': (np.array([0, 0, 1]),  np.array([0, -1, 0])),
+        'negz': (np.array([0, 0, -1]), np.array([0, -1, 0])),
+    }
+    
+    cubemap = {}
+    # Save the original camera pose if needed.
+    original_camera_pose = np.eye(4)
+    
+    # For each face, set up a new camera node with the desired orientation.
+    for face, (look_dir, up_dir) in faces.items():
+        cam_pose = np.eye(4)
+        # Set forward direction (-z in camera space) to be opposite of the look_dir.
+        cam_pose[:3, 2] = -look_dir
+        cam_pose[:3, 1] = up_dir
+        cam_pose[:3, 0] = np.cross(up_dir, -look_dir)
+        # Position the camera at the scene's center.
+        cam_pose[:3, 3] = original_camera_pose[:3, 3]
+        
+        # Remove any existing environment camera node.
+        # for node in scene.get_nodes(camera=env_camera):
+        #     scene.remove_node(node)
+        cam_node = pyrender.Node(camera=env_camera, matrix=cam_pose)
+        scene.add_node(cam_node)
+        
+        # Render this face.
+        color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+        cubemap[face] = color
+        # Remove the temporary camera node.
+        scene.remove_node(cam_node)
+    
+    return cubemap
+
+def sample_face(face_img, u, v):
+    """
+    Bilinearly sample from face_img at texture coordinates u,v.
+    face_img is assumed to be a numpy array of shape (H, H, C) in uint8.
+    u and v should be numpy arrays with values in [0, 1].
+    Returns a numpy array of shape (N, C) where N is the number of sample points.
+    """
+    H = face_img.shape[0]
+    # Convert normalized coordinates to pixel space
+    x = u * (H - 1)
+    y = v * (H - 1)
+    x0 = np.floor(x).astype(np.int32)
+    y0 = np.floor(y).astype(np.int32)
+    x1 = np.clip(x0 + 1, 0, H - 1)
+    y1 = np.clip(y0 + 1, 0, H - 1)
+
+    # Compute interpolation weights
+    wa = (x1 - x) * (y1 - y)
+    wb = (x1 - x) * (y - y0)
+    wc = (x - x0) * (y1 - y)
+    wd = (x - x0) * (y - y0)
+
+    # Sample four corners (note: image indexing is [row, col])
+    Ia = face_img[y0, x0, :3].astype(np.float32)
+    Ib = face_img[y1, x0, :3].astype(np.float32)
+    Ic = face_img[y0, x1, :3].astype(np.float32)
+    Id = face_img[y1, x1, :3].astype(np.float32)
+
+    # Combine with weights
+    result = (wa[..., None] * Ia + wb[..., None] * Ib +
+              wc[..., None] * Ic + wd[..., None] * Id)
+    return result
+
+def cubemap_to_equirectangular(cubemap, width=1024, height=512):
+    """
+    Converts a cubemap (dictionary of 6 face images) into an equirectangular image.
+    The cubemap dictionary must contain keys: 'posx', 'negx', 'posy', 'negy', 'posz', 'negz'.
+    Each face image should be a numpy array (e.g. rendered via pyrender) of shape (R, R, 4) or (R, R, 3).
+
+    Returns:
+        A PIL.Image instance containing the stitched equirectangular environment map.
+    """
+    # Create output equirectangular image array.
+    eq_img = np.zeros((height, width, 3), dtype=np.float32)
+
+    # Create a grid of pixel coordinates in the equirectangular image.
+    j, i = np.meshgrid(np.arange(width), np.arange(height))
+    # Normalize to [0,1]
+    u = i.astype(np.float32) / (height - 1)
+    v = j.astype(np.float32) / (width - 1)
+
+    # Convert to spherical coordinates.
+    # theta: longitude in [-pi, pi], phi: latitude in [0, pi]
+    theta = (u * np.pi * 2) - np.pi
+    phi = v * np.pi
+
+    # Convert spherical coordinates to Cartesian directions.
+    # Here: x = sin(phi)*cos(theta), y = cos(phi), z = sin(phi)*sin(theta)
+    x = np.sin(phi) * np.cos(theta)
+    y = np.cos(phi)
+    z = np.sin(phi) * np.sin(theta)
+
+    abs_x = np.abs(x)
+    abs_y = np.abs(y)
+    abs_z = np.abs(z)
+
+    # Determine which face of the cubemap each direction hits.
+    face_idx = np.empty_like(x, dtype=np.int32)
+    # 0: posx, 1: negx, 2: posy, 3: negy, 4: posz, 5: negz
+    # For each pixel, compare absolute components.
+    is_x_dominant = (abs_x >= abs_y) & (abs_x >= abs_z)
+    is_y_dominant = (abs_y >= abs_x) & (abs_y >= abs_z)
+    is_z_dominant = (abs_z >= abs_x) & (abs_z >= abs_y)
+
+    face_idx[is_x_dominant & (x > 0)] = 0  # posx
+    face_idx[is_x_dominant & (x <= 0)] = 1  # negx
+    face_idx[is_y_dominant & (y > 0)] = 2  # posy
+    face_idx[is_y_dominant & (y <= 0)] = 3  # negy
+    face_idx[is_z_dominant & (z > 0)] = 4  # posz
+    face_idx[is_z_dominant & (z <= 0)] = 5  # negz
+
+    # Mapping from face index to cubemap key.
+    code_to_key = {0: 'posx', 1: 'negx', 2: 'posy',
+                   3: 'negy', 4: 'posz', 5: 'negz'}
+
+    # Prepare arrays for texture coordinates for each pixel.
+    s = np.zeros_like(x, dtype=np.float32)
+    t = np.zeros_like(x, dtype=np.float32)
+
+    # Compute texture coordinates for each face using standard formulas.
+    # For posx (face 0)
+    mask = (face_idx == 0)
+    s[mask] = (-z[mask] / abs_x[mask] + 1) / 2
+    t[mask] = (-y[mask] / abs_x[mask] + 1) / 2
+
+    # For negx (face 1)
+    mask = (face_idx == 1)
+    s[mask] = (z[mask] / abs_x[mask] + 1) / 2
+    t[mask] = (-y[mask] / abs_x[mask] + 1) / 2
+
+    # For posy (face 2)
+    mask = (face_idx == 2)
+    s[mask] = (x[mask] / abs_y[mask] + 1) / 2
+    t[mask] = (-z[mask] / abs_y[mask] + 1) / 2
+
+    # For negy (face 3)
+    mask = (face_idx == 3)
+    s[mask] = (x[mask] / abs_y[mask] + 1) / 2
+    t[mask] = (z[mask] / abs_y[mask] + 1) / 2
+
+    # For posz (face 4)
+    mask = (face_idx == 4)
+    s[mask] = (x[mask] / abs_z[mask] + 1) / 2
+    t[mask] = (-y[mask] / abs_z[mask] + 1) / 2
+
+    # For negz (face 5)
+    mask = (face_idx == 5)
+    s[mask] = (-x[mask] / abs_z[mask] + 1) / 2
+    t[mask] = (-y[mask] / abs_z[mask] + 1) / 2
+
+    # For each face, sample from the corresponding cubemap face.
+    for face_code in range(6):
+        key = code_to_key[face_code]
+        face_img = cubemap[key]
+        # Ensure face image is in uint8 and in RGB (drop alpha if present)
+        if face_img.shape[2] == 4:
+            face_img = face_img[:, :, :3]
+        # Get indices in the equirectangular image that map to this face.
+        face_mask = (face_idx == face_code)
+        if np.any(face_mask):
+            # Extract the texture coordinates for these pixels.
+            s_face = s[face_mask]
+            t_face = t[face_mask]
+            # Sample color values using bilinear interpolation.
+            sampled = sample_face(face_img, s_face, t_face)
+            eq_img[face_mask] = sampled
+
+    # Convert result to uint8 and create a PIL Image.
+    eq_img = np.clip(eq_img, 0, 255).astype(np.uint8)
+    pil_img = Image.fromarray(eq_img)
+    # pil_img.save('cubemap_equirectangular.png')
+    return Image.fromarray(eq_img)
+
+def add_skybox(scene, env_texture):
+    """
+    Creates a skybox (a large inverted sphere) textured with the provided environment map.
+    
+    Parameters:
+        scene (pyrender.Scene): The scene to add the skybox to.
+        env_texture (PIL.Image): The environment map as an image.
+    """
+    # Create a large sphere to act as a skybox.
+    sky_sphere = trimesh.creation.icosphere(radius=100, subdivisions=4)
+    sky_sphere.invert()  # Invert normals so the texture is visible from inside.
+    
+    # Create a PBR material that uses the environment texture.
+    sky_material = pyrender.MetallicRoughnessMaterial(
+        baseColorTexture=pyrender.Texture(source=env_texture, source_channels='RGBA'),
+        metallicFactor=1.0,
+        roughnessFactor=0.0
+    )
+    
+    skybox_mesh = pyrender.Mesh.from_trimesh(sky_sphere, material=sky_material)
+    skybox_node = pyrender.Node(mesh=skybox_mesh, name='skybox')
+    scene.add_node(skybox_node)
+
+def create_pbr_mesh(trimesh_obj, texture_image, roughness=0.5):
+    """
+    Create a mesh with a PBR material that can reflect an environment map.
+    
+    Parameters:
+        trimesh_obj (trimesh.Trimesh): The mesh to be rendered.
+        texture_image (PIL.Image): The texture image for the object.
+        roughness (float): Roughness factor for reflections.
+    
+    Returns:
+        pyrender.Mesh: Mesh with a PBR material.
+    """
+    # pbr_material = pyrender.MetallicRoughnessMaterial(
+    #     baseColorTexture=pyrender.Texture(source=texture_image, source_channels='RGBA'),
+    #     metallicFactor=0.0,
+    #     roughnessFactor=roughness
+    # )
+    pbr_material = pyrender.MetallicRoughnessMaterial(
+        baseColorFactor=[0, 0, 0, 0],
+        metallicFactor=0.0,
+        roughnessFactor=roughness
+    )
+    return pyrender.Mesh.from_trimesh(trimesh_obj, material=pbr_material, smooth=True)
+
+def add_mirror_sphere(scene, position=(0, 1, 0), radius=0.5):
+    """
+    Adds a highly reflective mirror sphere to the scene to visualize cubemap reflections.
+    
+    Parameters:
+        scene (pyrender.Scene): The pyrender scene to add the sphere to.
+        position (tuple): (x, y, z) position of the sphere.
+        radius (float): Radius of the sphere.
+    """
+    # Create a simple sphere mesh using trimesh
+    sphere_mesh = trimesh.creation.icosphere(subdivisions=4, radius=radius)
+
+    # Create a PBR material with metallic and low roughness (mirror-like)
+    mirror_material = pyrender.MetallicRoughnessMaterial(
+        baseColorFactor=[1.0, 1.0, 1.0, 1.0],  # white so reflections are clean
+        metallicFactor=1.0,                   # full metal
+        roughnessFactor=0.0                   # perfect mirror
+    )
+
+    # Create pyrender mesh
+    mesh = pyrender.Mesh.from_trimesh(sphere_mesh, material=mirror_material, smooth=True)
+
+    # Create a node at the desired position
+    node = pyrender.Node(mesh=mesh, translation=np.array(position))
+
+    # Add to the scene
+    scene.add_node(node)
 
 def make_new_mesh(vt, f, ft, mesh, image):
     """
@@ -286,7 +551,20 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
     light_node = pyrender.Node(light=light)
     scene.add_node(light_node)
 
-    # add_indirect_illumination(scene, intensity=0.5)
+    # Create an environment camera for cubemap capture.
+    # env_camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
+    # Render cubemap faces from the center of the scene.
+    # cubemap = render_cubemap(scene, env_camera, renderer, resolution=256)
+    # Convert the cubemap to an equirectangular environment map.
+    # env_map = cubemap_to_equirectangular(cubemap, width=1024, height=512)
+    env_cubemap_id = create_simple_cubemap("cubemap_equirectangular.png")
+    renderer.env_cubemap = env_cubemap_id
+    # env_map = Image.open('synthetic_env_map.png')
+    # env_map = env_map.convert("RGBA")
+
+    # Add a skybox to the scene that uses the environment map.
+    # add_skybox(scene, env_map)
+    # add_mirror_sphere(scene, position=(0, 1, 0), radius=0.4)
 
     top = {0: {}, 1: {}}
     pant = {0: {}, 1: {}}
@@ -463,6 +741,7 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 # m = trimesh.Trimesh(vertices=vertices[1-seq_idx], faces=body_model.faces, \
                 #                     visual=trimesh.visual.TextureVisuals(uv=uv, image=body_texture[smpl_texture_path]), process=False)
 
+                # body_mesh = create_pbr_mesh(m, body_texture[smpl_texture_path], roughness=0.5)
                 body_mesh = pyrender.Mesh.from_trimesh(m, smooth=True)
                 if body_node is not None:
                     scene.remove_node(body_node)
@@ -473,6 +752,7 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 #                     visual=trimesh.visual.TextureVisuals(uv=pant_uv, image=clothing_texture[clothing_name][clothing_texture_name]), process=False)
                 m = make_new_mesh(pant_vt, pant_f, pant_ft, pant[1-seq_idx]['verts'][frame_idx - 2], clothing_texture[clothing_name][clothing_texture_name])
 
+                # pant_mesh = create_pbr_mesh(m, clothing_texture[clothing_name][clothing_texture_name], roughness=0.5)
                 pant_mesh = pyrender.Mesh.from_trimesh(m, smooth=True)
                 if pant_node is not None:
                     scene.remove_node(pant_node)
@@ -482,7 +762,8 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 # m = trimesh.Trimesh(vertices=top[1-seq_idx]['verts'][frame_idx - 2], faces=top[1-seq_idx]['faces'],\
                 #                     visual=trimesh.visual.TextureVisuals(uv=top_uv, image=clothing_texture[clothing_name][clothing_texture_name]), process=False)
                 m = make_new_mesh(top_vt, top_f, top_ft, top[1-seq_idx]['verts'][frame_idx - 2], clothing_texture[clothing_name][clothing_texture_name])
-
+                
+                # top_mesh = create_pbr_mesh(m, clothing_texture[clothing_name][clothing_texture_name], roughness=0.5)
                 top_mesh = pyrender.Mesh.from_trimesh(m, smooth=True)
                 if top_node is not None:
                     scene.remove_node(top_node)
@@ -504,12 +785,12 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 base_path = 'tmp/egobody_rgb'
                 # if not os.path.exists(os.path.join(base_path, scene_name, 'rgb')):
                 #     os.makedirs(os.path.join(base_path, scene_name, 'rgb'))
-                if not os.path.exists(os.path.join(base_path, scene_name, 'no_ii', 'rgb')):
-                    os.makedirs(os.path.join(base_path, scene_name, 'no_ii', 'rgb'))
-                if not os.path.exists(os.path.join(base_path, scene_name, 'no_ii', 'smplx_params')):
-                    os.makedirs(os.path.join(base_path, scene_name, 'no_ii', 'smplx_params'))
+                if not os.path.exists(os.path.join(base_path, scene_name, 'rgb')):
+                    os.makedirs(os.path.join(base_path, scene_name, 'rgb'))
+                if not os.path.exists(os.path.join(base_path, scene_name, 'smplx_params')):
+                    os.makedirs(os.path.join(base_path, scene_name, 'smplx_params'))
                 # np.save(os.path.join(base_path, scene_name, 'rgb', '%d.npy' % valid_num), rgb)
-                cv2.imwrite(os.path.join(base_path, scene_name, 'no_ii', 'rgb', '%d.jpg' % valid_num), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(os.path.join(base_path, scene_name, 'rgb', '%d.jpg' % valid_num), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
                 custom_smplx_params = np.zeros(99)
                 custom_smplx_params[:69] = smplx_params[1 - seq_idx, frame_idx, :69]
                 custom_smplx_params[69:85] = Rt.reshape(-1)
@@ -518,7 +799,7 @@ def gen_data_egobody(vis_marker=False, vis_pelvis=True, vis_object=False,
                 custom_smplx_params[96] = cx
                 custom_smplx_params[97] = cy
                 custom_smplx_params[98] = fx
-                np.save(os.path.join(base_path, scene_name, 'no_ii', 'smplx_params', '%d.npy' % valid_num), custom_smplx_params)
+                np.save(os.path.join(base_path, scene_name, 'smplx_params', '%d.npy' % valid_num), custom_smplx_params)
 
 
 
